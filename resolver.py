@@ -30,6 +30,22 @@ RATING_NORMALIZE = {
 # Native tag-search caps. danbooru limits anonymous searches to 2 tags.
 TAG_SEARCH_LIMIT = {"danbooru": 2, "rule34": 6, "gelbooru": 6, "safebooru": 6, "e621": 6}
 
+# Optional per-site auth appended to API URLs (gelbooru now needs api_key+user_id).
+_CREDENTIALS: dict[str, str] = {}
+
+
+def set_credentials(site: str, api_key: str = "", user_id: str = "") -> None:
+    """Store gelbooru-style credentials; appended as &api_key=..&user_id=.. ."""
+    api_key, user_id = (api_key or "").strip(), (user_id or "").strip()
+    if api_key and user_id:
+        _CREDENTIALS[site] = f"&api_key={api_key}&user_id={user_id}"
+    else:
+        _CREDENTIALS.pop(site, None)
+
+
+def _cred(site: str) -> str:
+    return _CREDENTIALS.get(site, "")
+
 
 def _norm_rating(raw: Optional[str]) -> Optional[str]:
     return None if raw is None else RATING_NORMALIZE.get(str(raw).strip().lower())
@@ -220,7 +236,7 @@ def build_tag_search_url(site: str, tags: List[str], limit: int) -> str:
     """Pure URL builder (unit-testable). Spaces->underscores, url-encoded, '+'-joined."""
     cfg = SITES[site]
     cleaned = [urllib.parse.quote(t.strip().replace(" ", "_"), safe="") for t in tags if t.strip()]
-    return cfg["search"].format(limit=limit, tags="+".join(cleaned))
+    return cfg["search"].format(limit=limit, tags="+".join(cleaned)) + _cred(site)
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +250,7 @@ def resolve(site: str, post_id: int, accepted_ratings: Set[str],
     if cfg is None:
         raise ValueError(f"unknown site {site!r}; known: {sorted(SITES)}")
     sess = session or requests.Session()
-    body = _request_json(site, cfg["api"].format(id=post_id), sess, timeout, max_retries)
+    body = _request_json(site, cfg["api"].format(id=post_id) + _cred(site), sess, timeout, max_retries)
     if body is None:
         return None
     url, rating = cfg["parser"](body)
@@ -251,7 +267,7 @@ def fetch_meta(site: str, post_id: int,
     if cfg is None:
         raise ValueError(f"unknown site {site!r}; known: {sorted(SITES)}")
     sess = session or requests.Session()
-    body = _request_json(site, cfg["api"].format(id=post_id), sess, timeout, max_retries)
+    body = _request_json(site, cfg["api"].format(id=post_id) + _cred(site), sess, timeout, max_retries)
     if body is None:
         return None
     post = _single_post(cfg["kind"], body)

@@ -185,3 +185,16 @@ def test_posts_list_robustness():
     assert resolver._posts_list("gelbooru", {"post": []}) == []
     assert resolver._posts_list("danbooru", "") == []
     print("PASS posts-list robustness (single-object, junk, empties)")
+
+
+def test_gelbooru_credentials():
+    resolver.set_credentials("gelbooru", "KEY", "42")
+    u = resolver.build_tag_search_url("gelbooru", ["1girl"], 5)
+    assert u.endswith("&api_key=KEY&user_id=42"), u
+    resolver.set_credentials("gelbooru", "", "")  # clear
+    u2 = resolver.build_tag_search_url("gelbooru", ["1girl"], 5)
+    assert "api_key" not in u2
+    # incomplete creds are ignored
+    resolver.set_credentials("gelbooru", "KEY", "")
+    assert "api_key" not in resolver.build_tag_search_url("gelbooru", ["1girl"], 5)
+    print("PASS gelbooru credentials append/clear")

@@ -171,8 +171,11 @@ def _grid(cards) -> str:
         return ""
     cells = []
     for src, post, cap in cards:
+        if not (isinstance(src, str) and src.startswith(("http://", "https://", "data:"))):
+            continue
+        src = html_lib.escape(src, quote=True)
         cap = html_lib.escape(cap)
-        href = f' href="{html_lib.escape(post)}" target="_blank" rel="noopener"' if post else ""
+        href = f' href="{html_lib.escape(post, quote=True)}" target="_blank" rel="noopener"' if post else ""
         cells.append(
             f'<a{href} style="text-decoration:none;color:inherit">'
             f'<div style="width:180px;margin:6px;display:inline-block;vertical-align:top">'
@@ -215,6 +218,8 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
             progress(0.7, desc="Fetching posts from booru API…")
             for rid, dist in zip(raw_ids, dists[0]):
                 s, num = rid.rsplit("_", 1)
+                if s not in booru_resolver.SITES:
+                    continue  # AIO may contain sites with no live API here
                 m = booru_resolver.fetch_meta(s, int(num), session=sess)
                 if not m or not m["url"] or not booru_resolver._passes(m["rating"], accepted):
                     continue
@@ -227,6 +232,8 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
                 progress(0.85, desc="Fetching tags for rerank…")
                 for rid in img_map:
                     s, num = rid.rsplit("_", 1)
+                    if s not in booru_resolver.SITES:
+                        tagmap[rid] = set(); continue
                     m = booru_resolver.fetch_meta(s, int(num), session=sess)
                     tagmap[rid] = m["tags"] if m else set()
             for rid, dist in zip(raw_ids, dists[0]):
@@ -285,7 +292,7 @@ def send_chips(selected):
     return " ".join(selected or [])
 
 
-def apply_settings(token, persist, contact):
+def apply_settings(token, persist, contact, gel_key, gel_uid):
     global hf_client
     msgs = []
     if token and token.strip():
@@ -305,12 +312,17 @@ def apply_settings(token, persist, contact):
         booru_resolver.USER_AGENT = (
             f"booru_image_similarity/1.0 (self-hosted; contact: {contact.strip()})")
         msgs.append("e621 contact (User-Agent) updated.")
+    if (gel_key or "").strip() or (gel_uid or "").strip():
+        booru_resolver.set_credentials("gelbooru", gel_key, gel_uid)
+        msgs.append("Gelbooru credentials "
+                    + ("set." if (gel_key or "").strip() and (gel_uid or "").strip()
+                       else "cleared (need both api_key and user_id)."))
     return "  \n".join(f"✅ {m}" for m in msgs) if msgs else "Nothing to apply."
 
 
 def clear_image_tab():
     purge_results()
-    return "", gr.update(choices=[], value=[]), "", ""
+    return "", gr.update(choices=[], value=[]), "", "", ""
 
 
 def clear_tag_tab():
@@ -392,9 +404,14 @@ def build_ui():
             remember = gr.Checkbox(value=False, label="Remember on this machine")
             contact = gr.Textbox(label="e621 contact email (API User-Agent)",
                                  placeholder="you@example.com")
+            gr.Markdown("Gelbooru live/tag search needs API credentials "
+                        "(Gelbooru → Account → API Access Credentials).")
+            gel_key = gr.Textbox(label="Gelbooru api_key", type="password", placeholder="...")
+            gel_uid = gr.Textbox(label="Gelbooru user_id", placeholder="12345")
             apply_btn = gr.Button("Apply settings", variant="primary")
             settings_status = gr.Markdown()
-            apply_btn.click(apply_settings, inputs=[hf_token, remember, contact],
+            apply_btn.click(apply_settings,
+                            inputs=[hf_token, remember, contact, gel_key, gel_uid],
                             outputs=[settings_status])
 
         gr.Markdown("---\n<sub>Self-hosted. Mostly NSFW sources — use responsibly and follow "
@@ -406,7 +423,7 @@ def build_ui():
             outputs=[results_img, tag_chips, tags_box, status_img],
         )
         clear_img_btn.click(clear_image_tab,
-                            outputs=[results_img, tag_chips, tags_box, status_img])
+                            outputs=[results_img, tag_chips, tags_box, status_img, text_query])
         send_btn.click(send_chips, inputs=[tag_chips], outputs=[tags_box])
         tag_btn.click(
             run_tag_search,
