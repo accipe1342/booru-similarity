@@ -177,9 +177,10 @@ def _predict(img):
         img, model_name="SwinV2_v3", fmt=("embedding", "rating", "general", "character"))
     ordered = sorted(general.items(), key=lambda kv: kv[1], reverse=True)
     pred = [k.replace(" ", "_") for k, _ in ordered[:N_TAGS_USED]]
+    conf = {k: round(float(v), 3) for k, v in ordered[:15]}
     emb = np.expand_dims(np.asarray(emb, dtype=np.float32), 0)
     faiss.normalize_L2(emb)
-    return emb, pred, " ".join(pred), set(pred)
+    return emb, pred, " ".join(pred), set(pred), conf
 
 
 def _embed(img, text):
@@ -205,7 +206,7 @@ def _embed(img, text):
         faiss.normalize_L2(emb)
     else:
         emb = t
-    return emb, [], "", set()
+    return emb, [], "", set(), {}
 
 
 def _log_providers():
@@ -253,8 +254,9 @@ def _grid(cards) -> str:
 def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accepted_ratings,
                    rerank, media_types, auto_clean, progress=gr.Progress()):
     blank_chips = gr.update(choices=[], value=[])
+    blank_conf = {}
     if img_input is None and not (text_query or "").strip():
-        return "", blank_chips, "", "_Upload an image or enter a text query._"
+        return "", blank_chips, "", "_Upload an image or enter a text query._", blank_conf
     try:
         if auto_clean:
             purge_results()
@@ -262,7 +264,7 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
         media_types = set(media_types or [])
 
         progress(0.05, desc="Embedding query…")
-        emb, pred_list, seed_tags, pred_set = _embed(img_input, text_query)
+        emb, pred_list, seed_tags, pred_set, conf = _embed(img_input, text_query)
 
         progress(0.3, desc="Loading index (first use downloads several GB)…")
         ids, index = _load_index(repo_id, repo_type, model_name)
@@ -291,7 +293,7 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
             if "image" not in media_types:
                 progress(1.0, desc="Done")
                 return ("", gr.update(choices=pred_list, value=[]), seed_tags,
-                        "⚠️ Mirror mode only returns static images; enable 'image' in Media types.")
+                        "⚠️ Mirror mode only returns static images; enable 'image' in Media types.", conf)
             progress(0.7, desc="Downloading images from HF mirror…")
             img_map = _fetch_mirror(raw_ids)
             tagmap = {}
@@ -325,10 +327,10 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
             hint = ("Mirror mode needs a valid HF token (Settings tab)."
                     if mode == "mirror" else
                     "Try more ratings/media types, or the API may be rate-limiting.")
-            return "", chips, seed_tags, f"⚠️ No images returned. {hint}"
-        return _grid(cards), chips, seed_tags, f"✅ {len(cards)} results."
+            return "", chips, seed_tags, f"⚠️ No images returned. {hint}", conf
+        return _grid(cards), chips, seed_tags, f"✅ {len(cards)} results.", conf
     except Exception as e:  # noqa: BLE001
-        return "", blank_chips, "", f"❌ Error: {booru_resolver.redact(e)}"
+        return "", blank_chips, "", f"❌ Error: {booru_resolver.redact(e)}", blank_conf
 
 
 def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, media_types, auto_clean,
@@ -417,7 +419,7 @@ def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid, 
 
 def clear_image_tab():
     purge_results()
-    return "", gr.update(choices=[], value=[]), "", "", ""
+    return "", gr.update(choices=[], value=[]), "", "", "", {}
 
 
 def clear_tag_tab():
@@ -484,6 +486,9 @@ def build_ui():
                 gr.Markdown("Tick tags, then send them to the Tag search tab.")
                 tag_chips = gr.CheckboxGroup(choices=[], label="Detected tags")
                 send_btn = gr.Button("Use selected → Tag search")
+            with gr.Accordion("Tag confidence", open=False):
+                tag_conf = gr.Label(num_top_classes=15,
+                                    label="Detected tags by probability")
             status_img = gr.Markdown()
             results_img = gr.HTML()
 
@@ -553,11 +558,11 @@ def build_ui():
         find_btn.click(
             run_similarity,
             inputs=[img_input, text_query, index_name, mode, n_img, ratings_img, rerank, media_types_img, auto_clean_img],
-            outputs=[results_img, tag_chips, tags_box, status_img],
+            outputs=[results_img, tag_chips, tags_box, status_img, tag_conf],
             show_progress_on=[status_img],
         )
         clear_img_btn.click(clear_image_tab,
-                            outputs=[results_img, tag_chips, tags_box, status_img, text_query])
+                            outputs=[results_img, tag_chips, tags_box, status_img, text_query, tag_conf])
         send_btn.click(send_chips, inputs=[tag_chips], outputs=[tags_box])
         tag_btn.click(
             run_tag_search,
