@@ -223,9 +223,49 @@ def clear_all():
     return [], {}, "", ""
 
 
+def apply_settings(token, persist, contact):
+    """Apply HF token + e621 contact UA at runtime (no restart needed)."""
+    global hf_client
+    msgs = []
+    if token and token.strip():
+        tok = token.strip()
+        try:
+            if persist:
+                from huggingface_hub import login
+                login(token=tok, add_to_git_credential=False)  # stores in HF cache
+                msgs.append("HF token applied and saved to this machine.")
+            else:
+                os.environ["HF_TOKEN"] = tok
+                msgs.append("HF token applied for this session.")
+            hf_client = get_hf_client()  # rebuild client so downloads use the token
+        except Exception as e:  # noqa: BLE001
+            msgs.append(f"Token error: {e}")
+    if contact and contact.strip():
+        booru_resolver.USER_AGENT = (
+            f"booru_image_similarity/1.0 (self-hosted; contact: {contact.strip()})")
+        msgs.append("e621 contact (User-Agent) updated.")
+    return "  \n".join(f"\u2705 {m}" for m in msgs) if msgs else "Nothing to apply."
+
+
 def build_ui():
     with gr.Blocks() as demo:
         gr.Markdown("## Multi-Booru Image Similarity & Tag Search")
+        with gr.Accordion("\u2699\ufe0f Settings", open=False):
+            gr.Markdown(
+                "Mirror mode needs a HuggingFace token (the booru mirrors are gated). "
+                "Use a **read-only** token from https://huggingface.co/settings/tokens. "
+                "'Remember' stores it locally via the standard HF login; otherwise it "
+                "lasts only for this app session.")
+            hf_token = gr.Textbox(label="HuggingFace token", type="password",
+                                  placeholder="hf_...")
+            remember = gr.Checkbox(value=False, label="Remember on this machine")
+            contact = gr.Textbox(label="e621 contact email (for the API User-Agent)",
+                                 placeholder="you@example.com")
+            apply_btn = gr.Button("Apply settings")
+            settings_status = gr.Markdown()
+            apply_btn.click(apply_settings,
+                            inputs=[hf_token, remember, contact],
+                            outputs=[settings_status])
         with gr.Row():
             img_input = gr.Image(type="pil", label="Input")
             with gr.Column():
