@@ -41,9 +41,13 @@ INDEXES = {
     "rule34 (~10M)":     ("deepghs/anime_sites_indices", "model", "SwinV2_v3_rule34_9972271_4GB",   "rule34",   "bare"),
     "gelbooru (~10M)":   ("deepghs/anime_sites_indices", "model", "SwinV2_v3_gelbooru_10067238_4GB", "gelbooru", "bare"),
     "danbooru (~8M)":    ("deepghs/anime_sites_indices", "model", "SwinV2_v3_danbooru_8005009_4GB",  "danbooru", "bare"),
+    "yandere (~1M)":     ("deepghs/anime_sites_indices", "model", "SwinV2_v3_yandere_1083589_1GB",    "yandere",        "bare"),
+    "konachan (~300k)":  ("deepghs/anime_sites_indices", "model", "SwinV2_v3_konachan_309751_128MB", "konachan",       "bare"),
+    "zerochan (~3.8M)":  ("deepghs/anime_sites_indices", "model", "SwinV2_v3_zerochan_3842375_1GB",  "zerochan",       "bare"),
+    "anime_pictures (~600k)": ("deepghs/anime_sites_indices", "model", "SwinV2_v3_anime_pictures_605865_1GB", "anime_pictures", "bare"),
     "ALL-IN-ONE (~78M)": ("deepghs/anime_sites_indices", "model", "SwinV2_v3_AIO20250525_78281430_8G", None,    "prefixed"),
 }
-SITES = ["rule34", "gelbooru", "safebooru", "e621", "danbooru"]
+SITES = ["rule34", "gelbooru", "safebooru", "e621", "danbooru", "yandere", "konachan"]
 DEFAULT_MODE = os.environ.get("RETRIEVAL_MODE", "mirror")
 _RATINGS = ["general", "sensitive", "questionable", "explicit"]
 N_TAGS_USED = 20
@@ -91,12 +95,17 @@ def _raw_ids(neighbour_ids, site, id_style) -> List[str]:
 def _fetch_mirror(raw_ids: List[str]) -> Dict[str, Image.Image]:
     from cheesechaser.datapool import (
         DanbooruNewestWebpDataPool, GelbooruWebpDataPool, Rule34WebpDataPool,
+        YandeWebpDataPool, KonachanWebpDataPool, ZerochanWebpDataPool,
+        AnimePicturesWebpDataPool,
     )
     from hfutils.utils import TemporaryDirectory
     from pools import quick_webp_pool
 
     site_cls = {"danbooru": DanbooruNewestWebpDataPool,
-                "gelbooru": GelbooruWebpDataPool, "rule34": Rule34WebpDataPool}
+                "gelbooru": GelbooruWebpDataPool, "rule34": Rule34WebpDataPool,
+                "yandere": YandeWebpDataPool, "konachan": KonachanWebpDataPool,
+                "zerochan": ZerochanWebpDataPool,
+                "anime_pictures": AnimePicturesWebpDataPool}
     by_site = defaultdict(list)
     for rid in raw_ids:
         site, num = rid.rsplit("_", 1)

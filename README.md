@@ -142,3 +142,14 @@ so you can confirm the GPU is in use.
 
 `.github/workflows/ci.yml` runs `test_pipeline.py` (the offline FAISS + resolver
 tests) on every push/PR against Python 3.11 and 3.12.
+
+## More boorus
+
+The dropdown now also includes the other prebuilt deepghs indices: **yandere,
+konachan, zerochan, anime_pictures** (plus the 78M all-in-one).
+
+- **Mirror mode** works for all of them (dedicated cheesechaser pools).
+- **Live mode + tag search** work for yandere & konachan too (Moebooru API — note
+  their rating `s` means *safe*, mapped to `general`). zerochan & anime_pictures
+  are mirror-only (nonstandard APIs); live mode skips them gracefully, but result
+  thumbnails still link to the original post.

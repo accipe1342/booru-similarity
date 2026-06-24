@@ -198,3 +198,21 @@ def test_gelbooru_credentials():
     resolver.set_credentials("gelbooru", "KEY", "")
     assert "api_key" not in resolver.build_tag_search_url("gelbooru", ["1girl"], 5)
     print("PASS gelbooru credentials append/clear")
+
+
+def test_moebooru_parsing():
+    # Moebooru 's' = SAFE -> general (NOT sensitive like gelbooru)
+    post = {"id": 5, "file_url": "https://y/a.jpg", "rating": "s", "tags": "1girl solo"}
+    url, rating = resolver._purl_moebooru(post)
+    assert url == "https://y/a.jpg" and rating == "general", rating
+    assert resolver._purl_moebooru({"rating": "e", "file_url": "u"})[1] == "explicit"
+    assert resolver._ptags_moebooru(post) == {"1girl", "solo"}
+    # body-level extractor over an array response
+    u, r = resolver._extract_moebooru([post])
+    assert u == "https://y/a.jpg" and r == "general"
+    # registry + post urls present
+    for s in ["yandere", "konachan"]:
+        assert s in resolver.SITES and "{id}" in resolver.SITES[s]["api"]
+    assert resolver.post_url("yandere", 9) == "https://yande.re/post/show/9"
+    assert resolver.post_url("zerochan", 9) == "https://www.zerochan.net/9"
+    print("PASS moebooru parsing + new post urls")

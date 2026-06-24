@@ -28,7 +28,8 @@ RATING_NORMALIZE = {
 }
 
 # Native tag-search caps. danbooru limits anonymous searches to 2 tags.
-TAG_SEARCH_LIMIT = {"danbooru": 2, "rule34": 6, "gelbooru": 6, "safebooru": 6, "e621": 6}
+TAG_SEARCH_LIMIT = {"danbooru": 2, "rule34": 6, "gelbooru": 6, "safebooru": 6, "e621": 6,
+                    "yandere": 6, "konachan": 6}
 
 # Optional per-site auth appended to API URLs (gelbooru now needs api_key+user_id).
 _CREDENTIALS: dict[str, str] = {}
@@ -75,6 +76,20 @@ def _purl_danbooru(post):
     return (post.get("large_file_url") or post.get("file_url")), _norm_rating(post.get("rating"))
 
 
+# Moebooru (yande.re, konachan): rating "s" = SAFE (not sensitive).
+_MOEBOORU_RATING = {"s": "general", "safe": "general", "q": "questionable",
+                    "questionable": "questionable", "e": "explicit", "explicit": "explicit"}
+
+
+def _purl_moebooru(post):
+    r = str(post.get("rating", "")).strip().lower()
+    return post.get("file_url"), _MOEBOORU_RATING.get(r)
+
+
+def _ptags_moebooru(post):
+    return set((post.get("tags") or "").split())
+
+
 def _ptags_gelbooru(post) -> Set[str]:
     return set((post.get("tags") or "").split())
 
@@ -92,8 +107,10 @@ def _pid(post):
     return post.get("id")
 
 
-_PURL = {"gelbooru": _purl_gelbooru, "e621": _purl_e621, "danbooru": _purl_danbooru}
-_PTAGS = {"gelbooru": _ptags_gelbooru, "e621": _ptags_e621, "danbooru": _ptags_danbooru}
+_PURL = {"gelbooru": _purl_gelbooru, "e621": _purl_e621, "danbooru": _purl_danbooru,
+         "moebooru": _purl_moebooru}
+_PTAGS = {"gelbooru": _ptags_gelbooru, "e621": _ptags_e621, "danbooru": _ptags_danbooru,
+          "moebooru": _ptags_moebooru}
 
 
 # --------------------------------------------------------------------------- #
@@ -115,7 +132,7 @@ def _posts_list(kind: str, body: Any) -> List[dict]:
             p = body
     elif kind == "e621":
         p = body.get("posts") if isinstance(body, dict) else body
-    elif kind == "danbooru":
+    elif kind in ("danbooru", "moebooru"):
         p = body
     else:
         return []
@@ -151,6 +168,11 @@ def _extract_danbooru(body: Any):
     return _purl_danbooru(p) if p else (None, None)
 
 
+def _extract_moebooru(body: Any):
+    p = _single_post("moebooru", body)
+    return _purl_moebooru(p) if p else (None, None)
+
+
 # --------------------------------------------------------------------------- #
 # Site registry. api = single-id lookup; search = native tag search.
 # --------------------------------------------------------------------------- #
@@ -179,6 +201,16 @@ SITES = {
         "kind": "danbooru", "parser": _extract_danbooru, "min_interval": 0.15,
         "api": "https://danbooru.donmai.us/posts/{id}.json",
         "search": "https://danbooru.donmai.us/posts.json?limit={limit}&tags={tags}",
+    },
+    "yandere": {
+        "kind": "moebooru", "parser": _extract_moebooru, "min_interval": 1.0,
+        "api": "https://yande.re/post.json?tags=id:{id}",
+        "search": "https://yande.re/post.json?limit={limit}&tags={tags}",
+    },
+    "konachan": {
+        "kind": "moebooru", "parser": _extract_moebooru, "min_interval": 1.0,
+        "api": "https://konachan.com/post.json?tags=id:{id}",
+        "search": "https://konachan.com/post.json?limit={limit}&tags={tags}",
     },
 }
 
@@ -309,6 +341,10 @@ POST_URL = {
     "safebooru": "https://safebooru.org/index.php?page=post&s=view&id={id}",
     "e621": "https://e621.net/posts/{id}",
     "danbooru": "https://danbooru.donmai.us/posts/{id}",
+    "yandere": "https://yande.re/post/show/{id}",
+    "konachan": "https://konachan.com/post/show/{id}",
+    "zerochan": "https://www.zerochan.net/{id}",
+    "anime_pictures": "https://anime-pictures.net/posts/{id}",
 }
 
 
