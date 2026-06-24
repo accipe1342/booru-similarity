@@ -12,3 +12,4 @@ data/
 *.webp
 .gradio/
 .DS_Store
+_gradio_tmp/

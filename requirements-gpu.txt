@@ -1,0 +1,17 @@
+# GPU acceleration for the WD14 / SigLIP ONNX models (via dghs-imgutils).
+# Install the BASE requirements first, then ONE of the options below, then
+# (NVIDIA) set the env var ONNX_MODE=cuda before launching.
+#
+#   pip install -r requirements.txt
+#
+# --- NVIDIA (CUDA) ---  replaces onnxruntime with the GPU build:
+#   pip uninstall -y onnxruntime
+#   pip install onnxruntime-gpu
+#   set ONNX_MODE=cuda        (PowerShell:  $env:ONNX_MODE="cuda")
+#
+# --- Windows, any GPU (DirectML) ---
+#   pip uninstall -y onnxruntime onnxruntime-gpu
+#   pip install onnxruntime-directml
+#
+# The app prints the active ONNX providers on startup so you can confirm the GPU
+# is being used (look for CUDAExecutionProvider / DmlExecutionProvider).

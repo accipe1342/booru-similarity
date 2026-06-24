@@ -107,3 +107,38 @@ python build_index.py --images /data/safebooru_imgs --out indices/safebooru --bi
   with SwinV2_v3 embeddings (1024-d). Don't mix tagger versions.
 - The prebuilt indices are snapshots (dates in their names); they won't contain
   posts newer than the snapshot. Rebuild periodically with `embeddings_tools`.
+
+## Text & blended search (SigLIP)
+
+deepghs's SigLIP model (`smilingwolf/siglip_swinv2_base`, repo `deepghs/siglip_beta`)
+was trained to share the **same embedding space** as the WD14 SwinV2_v3 tagger, so
+text queries search the *same* indices — no extra index needed.
+
+In the **Image search** tab there's a "Text query" box:
+
+- text only -> SigLIP text encoder finds matching posts ("sunset, two girls, red dress")
+- image only -> WD14 visual embedding (current behaviour, also yields tags)
+- both -> normalized average of image + text embeddings (blended search)
+
+Works best on the danbooru index (the model speaks danbooru concepts). The SigLIP
+model auto-downloads on first text search.
+
+## GPU acceleration
+
+The per-query bottleneck is the ONNX tagger/encoder. To run it on a GPU, install
+the GPU ONNX runtime (see `requirements-gpu.txt`):
+
+```bash
+pip install -r requirements.txt
+pip uninstall -y onnxruntime && pip install onnxruntime-gpu   # NVIDIA/CUDA
+# Windows, any GPU: pip install onnxruntime-directml  (instead of onnxruntime-gpu)
+```
+
+Then (NVIDIA) launch with `ONNX_MODE=cuda`. The app prints the active ONNX
+providers on startup, e.g. `available providers: ['CUDAExecutionProvider', ...]`,
+so you can confirm the GPU is in use.
+
+## CI
+
+`.github/workflows/ci.yml` runs `test_pipeline.py` (the offline FAISS + resolver
+tests) on every push/PR against Python 3.11 and 3.12.

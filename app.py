@@ -47,6 +47,9 @@ SITES = ["rule34", "gelbooru", "safebooru", "e621", "danbooru"]
 DEFAULT_MODE = os.environ.get("RETRIEVAL_MODE", "mirror")
 _RATINGS = ["general", "sensitive", "questionable", "explicit"]
 N_TAGS_USED = 20
+# SigLIP shares the WD14 SwinV2_v3 embedding space -> same indices work for text.
+SIGLIP_REPO = "deepghs/siglip_beta"
+SIGLIP_MODEL = "smilingwolf/siglip_swinv2_base_2025_02_22_18h56m54s"
 hf_client = get_hf_client()
 
 
@@ -120,6 +123,41 @@ def _predict(img):
     return emb, pred, " ".join(pred), set(pred)
 
 
+def _embed(img, text):
+    """Return (emb[1,D], pred_tags, seed_tag_str, pred_set).
+
+    Image only -> WD14 (also yields tags). Text given -> SigLIP text encoder
+    (same embedding space). Both given -> normalized average (text+image blend).
+    """
+    text = (text or "").strip()
+    if not text:
+        return _predict(img)
+    from imgutils.generic import siglip
+    t = np.asarray(siglip.siglip_text_encode(
+        text, repo_id=SIGLIP_REPO, model_name=SIGLIP_MODEL, fmt="embeddings"),
+        dtype=np.float32).reshape(1, -1)
+    faiss.normalize_L2(t)
+    if img is not None:
+        i = np.asarray(siglip.siglip_image_encode(
+            img, repo_id=SIGLIP_REPO, model_name=SIGLIP_MODEL, fmt="embeddings"),
+            dtype=np.float32).reshape(1, -1)
+        faiss.normalize_L2(i)
+        emb = (i + t) / 2.0
+        faiss.normalize_L2(emb)
+    else:
+        emb = t
+    return emb, [], "", set()
+
+
+def _log_providers():
+    try:
+        import onnxruntime as ort
+        print("[onnx] available providers:", ort.get_available_providers(),
+              "| ONNX_MODE=", os.environ.get("ONNX_MODE", "(unset -> CPU)"))
+    except Exception as e:  # noqa: BLE001
+        print("[onnx] provider check failed:", e)
+
+
 def _pil_to_datauri(im: Image.Image, size: int = 256) -> str:
     t = im.convert("RGB").copy()
     t.thumbnail((size, size))
@@ -150,18 +188,18 @@ def _grid(cards) -> str:
 # --------------------------------------------------------------------------- #
 # Handlers
 # --------------------------------------------------------------------------- #
-def run_similarity(img_input, index_name, mode, n_neighbours, accepted_ratings,
+def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accepted_ratings,
                    rerank, auto_clean, progress=gr.Progress()):
     blank_chips = gr.update(choices=[], value=[])
-    if img_input is None:
-        return "", blank_chips, "", "_Upload an image first._"
+    if img_input is None and not (text_query or "").strip():
+        return "", blank_chips, "", "_Upload an image or enter a text query._"
     try:
         if auto_clean:
             purge_results()
         repo_id, repo_type, model_name, site, id_style = INDEXES[index_name]
 
-        progress(0.05, desc="Embedding image (WD14)…")
-        emb, pred_list, seed_tags, pred_set = _predict(img_input)
+        progress(0.05, desc="Embedding query…")
+        emb, pred_list, seed_tags, pred_set = _embed(img_input, text_query)
 
         progress(0.3, desc="Loading index (first use downloads several GB)…")
         ids, index = _load_index(repo_id, repo_type, model_name)
@@ -295,7 +333,11 @@ def build_ui():
 
         with gr.Tab("🔍 Image search"):
             with gr.Row(equal_height=True):
-                img_input = gr.Image(type="pil", label="Input", height=420)
+                with gr.Column():
+                    img_input = gr.Image(type="pil", label="Input", height=360)
+                    text_query = gr.Textbox(
+                        label="Text query (optional; blends with image if both set)",
+                        placeholder="e.g. sunset, two girls, red dress")
                 with gr.Column():
                     with gr.Group():
                         index_name = gr.Dropdown(choices=list(INDEXES),
@@ -360,7 +402,7 @@ def build_ui():
 
         find_btn.click(
             run_similarity,
-            inputs=[img_input, index_name, mode, n_img, ratings_img, rerank, auto_clean_img],
+            inputs=[img_input, text_query, index_name, mode, n_img, ratings_img, rerank, auto_clean_img],
             outputs=[results_img, tag_chips, tags_box, status_img],
         )
         clear_img_btn.click(clear_image_tab,
@@ -376,5 +418,6 @@ def build_ui():
 
 
 if __name__ == "__main__":
+    _log_providers()
     purge_results()
     build_ui().queue().launch()
