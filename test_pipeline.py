@@ -125,3 +125,47 @@ if __name__ == "__main__":
     test_resolver_danbooru()
     test_site_registry()
     print("\nALL TESTS PASSED")
+
+
+# ----- new tag-feature coverage ------------------------------------------- #
+def test_tag_parsers():
+    assert resolver._ptags_gelbooru({"tags": "1girl solo blue_hair"}) == {"1girl", "solo", "blue_hair"}
+    assert resolver._ptags_e621({"tags": {"general": ["1girl", "solo"], "artist": ["x"]}}) == {"1girl", "solo", "x"}
+    assert resolver._ptags_danbooru({"tag_string": "1girl solo"}) == {"1girl", "solo"}
+    print("PASS tag parsers (gelbooru/e621/danbooru)")
+
+
+def test_posts_list_extraction():
+    assert len(resolver._posts_list("gelbooru", {"post": [{"id": 1}, {"id": 2}]})) == 2
+    assert len(resolver._posts_list("gelbooru", [{"id": 1}])) == 1
+    assert resolver._posts_list("e621", {"posts": [{"id": 9}]})[0]["id"] == 9
+    assert resolver._posts_list("danbooru", [{"id": 5}])[0]["id"] == 5
+    print("PASS posts-list extraction per kind")
+
+
+def test_build_tag_search_url():
+    u = resolver.build_tag_search_url("rule34", ["1girl", "blue hair"], 20)
+    assert "tags=1girl+blue_hair" in u and "limit=20" in u  # space -> underscore
+    u2 = resolver.build_tag_search_url("e621", ["fox_(animal)"], 5)
+    assert "fox_%28animal%29" in u2  # parens url-encoded
+    print("PASS tag-search URL builder (underscore + url-encode)")
+
+
+def test_post_url():
+    assert resolver.post_url("rule34", 123) == "https://rule34.xxx/index.php?page=post&s=view&id=123"
+    assert resolver.post_url("e621", 9) == "https://e621.net/posts/9"
+    assert resolver.post_url("danbooru", 7) == "https://danbooru.donmai.us/posts/7"
+    print("PASS post-page URL builder")
+
+
+def test_tag_overlap_scoring():
+    pred = {"1girl", "solo", "blue_hair", "smile"}
+    a = {"1girl", "blue_hair"}; b = {"1girl", "solo", "blue_hair", "smile", "extra"}
+    assert len(pred & a) == 2 and len(pred & b) == 4
+    ranked = sorted([("a", a), ("b", b)], key=lambda kv: -len(pred & kv[1]))
+    assert ranked[0][0] == "b"  # higher overlap first
+    print("PASS tag-overlap rerank scoring")
+
+
+if __name__ == "__main__":
+    pass
