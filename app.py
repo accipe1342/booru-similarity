@@ -65,14 +65,20 @@ def _load_index(repo_id: str, repo_type: str, model_name: str):
 
 
 def _raw_ids(neighbour_ids, site, id_style) -> List[str]:
-    """Normalize FAISS-returned ids into 'site_postid' strings."""
+    """Normalize FAISS-returned ids into 'site_postid' strings.
+
+    deepghs indices may store ids already prefixed ('rule34_11348807') even for
+    single-site indices, or as bare ints. Handle both: a pure-integer id with a
+    known site gets the prefix added; anything already containing a prefix is
+    kept as-is.
+    """
     out = []
     for x in neighbour_ids:
-        s = str(x)
-        if id_style == "prefixed":          # already 'rule34_123'
+        s = str(x).strip()
+        if s.lstrip("-").isdigit() and site:   # bare int + known site
+            out.append(f"{site}_{int(s)}")
+        else:                                   # already 'site_postid'
             out.append(s)
-        else:                                # bare int -> add site prefix
-            out.append(f"{site}_{int(x)}")
     return out
 
 
