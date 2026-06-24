@@ -153,3 +153,11 @@ konachan, zerochan, anime_pictures** (plus the 78M all-in-one).
   their rating `s` means *safe*, mapped to `general`). zerochan & anime_pictures
   are mirror-only (nonstandard APIs); live mode skips them gracefully, but result
   thumbnails still link to the original post.
+
+## API credentials (rule34 & gelbooru)
+
+rule34 and gelbooru now **require API credentials** for live/tag search (mirror
+mode is unaffected — it uses the HF mirrors). Get an `api_key` + `user_id` from
+your account on each site (Account → API access), enter them in the **Settings**
+tab, and click Apply. They're appended to every API call for that site. Without
+them, live/tag search on rule34/gelbooru returns "Missing authentication".

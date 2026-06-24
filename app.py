@@ -11,6 +11,10 @@ in-UI errors, interactive tag chips, and clickable thumbnails that open the
 original post. Mirror thumbnails are inlined as data URIs (nothing extra on disk).
 """
 import os
+import warnings
+
+# Silence a harmless Starlette deprecation warning surfaced by Gradio per request.
+warnings.filterwarnings("ignore", message=r".*HTTP_422_UNPROCESSABLE_ENTITY.*")
 
 RESULTS_TMP = os.path.abspath(
     os.environ.setdefault("GRADIO_TEMP_DIR", os.path.join(os.getcwd(), "_gradio_tmp")))
@@ -269,7 +273,7 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
             return "", chips, seed_tags, f"⚠️ No images returned. {hint}"
         return _grid(cards), chips, seed_tags, f"✅ {len(cards)} results."
     except Exception as e:  # noqa: BLE001
-        return "", blank_chips, "", f"❌ Error: {e}"
+        return "", blank_chips, "", f"❌ Error: {booru_resolver.redact(e)}"
 
 
 def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, auto_clean,
@@ -294,14 +298,14 @@ def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, auto_clean,
             return "", note + "\n\n_No results — tags may not match this site._"
         return _grid(cards), note + f"  ·  {len(cards)} results."
     except Exception as e:  # noqa: BLE001
-        return "", f"❌ Error: {e}"
+        return "", f"❌ Error: {booru_resolver.redact(e)}"
 
 
 def send_chips(selected):
     return " ".join(selected or [])
 
 
-def apply_settings(token, persist, contact, gel_key, gel_uid):
+def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid):
     global hf_client
     msgs = []
     if token and token.strip():
@@ -316,7 +320,7 @@ def apply_settings(token, persist, contact, gel_key, gel_uid):
                 msgs.append("HF token applied for this session.")
             hf_client = get_hf_client()
         except Exception as e:  # noqa: BLE001
-            msgs.append(f"Token error: {e}")
+            msgs.append(f"Token error: {booru_resolver.redact(str(e).replace(tok, '***'))}")
     if contact and contact.strip():
         booru_resolver.USER_AGENT = (
             f"booru_image_similarity/1.0 (self-hosted; contact: {contact.strip()})")
@@ -325,6 +329,11 @@ def apply_settings(token, persist, contact, gel_key, gel_uid):
         booru_resolver.set_credentials("gelbooru", gel_key, gel_uid)
         msgs.append("Gelbooru credentials "
                     + ("set." if (gel_key or "").strip() and (gel_uid or "").strip()
+                       else "cleared (need both api_key and user_id)."))
+    if (r34_key or "").strip() or (r34_uid or "").strip():
+        booru_resolver.set_credentials("rule34", r34_key, r34_uid)
+        msgs.append("Rule34 credentials "
+                    + ("set." if (r34_key or "").strip() and (r34_uid or "").strip()
                        else "cleared (need both api_key and user_id)."))
     return "  \n".join(f"✅ {m}" for m in msgs) if msgs else "Nothing to apply."
 
@@ -417,10 +426,14 @@ def build_ui():
                         "(Gelbooru → Account → API Access Credentials).")
             gel_key = gr.Textbox(label="Gelbooru api_key", type="password", placeholder="...")
             gel_uid = gr.Textbox(label="Gelbooru user_id", placeholder="12345")
+            gr.Markdown("Rule34 live/tag search also needs API credentials "
+                        "(rule34.xxx → account → API access).")
+            r34_key = gr.Textbox(label="Rule34 api_key", type="password", placeholder="...")
+            r34_uid = gr.Textbox(label="Rule34 user_id", placeholder="12345")
             apply_btn = gr.Button("Apply settings", variant="primary")
             settings_status = gr.Markdown()
             apply_btn.click(apply_settings,
-                            inputs=[hf_token, remember, contact, gel_key, gel_uid],
+                            inputs=[hf_token, remember, contact, gel_key, gel_uid, r34_key, r34_uid],
                             outputs=[settings_status])
 
         gr.Markdown("---\n<sub>Self-hosted. Mostly NSFW sources — use responsibly and follow "
@@ -430,6 +443,7 @@ def build_ui():
             run_similarity,
             inputs=[img_input, text_query, index_name, mode, n_img, ratings_img, rerank, auto_clean_img],
             outputs=[results_img, tag_chips, tags_box, status_img],
+            show_progress_on=[status_img],
         )
         clear_img_btn.click(clear_image_tab,
                             outputs=[results_img, tag_chips, tags_box, status_img, text_query])
@@ -438,6 +452,7 @@ def build_ui():
             run_tag_search,
             inputs=[tags_box, site_dd, n_tag, ratings_tag, auto_clean_tag],
             outputs=[results_tag, status_tag],
+            show_progress_on=[status_tag],
         )
         clear_tag_btn.click(clear_tag_tab, outputs=[results_tag, status_tag])
     return demo

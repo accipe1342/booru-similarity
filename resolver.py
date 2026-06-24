@@ -11,6 +11,7 @@ legacy "safe" -> "general". Parsing is split from HTTP so it stays unit-testable
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 import urllib.parse
@@ -46,6 +47,15 @@ def set_credentials(site: str, api_key: str = "", user_id: str = "") -> None:
 
 def _cred(site: str) -> str:
     return _CREDENTIALS.get(site, "")
+
+
+_REDACT_RE = re.compile(
+    r"((?:api_key|user_id|login|token|password|api-key)=)[^&\s\"']+", re.I)
+
+
+def redact(text) -> str:
+    """Strip secrets from any string before it's shown/logged."""
+    return _REDACT_RE.sub(r"\1***", str(text))
 
 
 def _norm_rating(raw: Optional[str]) -> Optional[str]:

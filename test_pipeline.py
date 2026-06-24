@@ -216,3 +216,12 @@ def test_moebooru_parsing():
     assert resolver.post_url("yandere", 9) == "https://yande.re/post/show/9"
     assert resolver.post_url("zerochan", 9) == "https://www.zerochan.net/9"
     print("PASS moebooru parsing + new post urls")
+
+
+def test_redact():
+    s = "HTTPError for https://api.rule34.xxx/index.php?json=1&tags=x&api_key=SECRET&user_id=42"
+    out = resolver.redact(s)
+    assert "SECRET" not in out and "user_id=42" not in out
+    assert "api_key=***" in out and "user_id=***" in out
+    assert resolver.redact("login=bob&password=hunter2") == "login=***&password=***"
+    print("PASS redact strips api_key/user_id/login/password/token")
