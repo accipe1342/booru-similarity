@@ -46,6 +46,7 @@ def set_credentials(site: str, api_key: str = "", user_id: str = "") -> None:
 
 
 def _cred(site: str) -> str:
+    """Return the credential query-string suffix (e.g. '&api_key=..&user_id=..') for a site, or '' if none configured."""
     return _CREDENTIALS.get(site, "")
 
 
@@ -59,10 +60,12 @@ def redact(text) -> str:
 
 
 def _norm_rating(raw: Optional[str]) -> Optional[str]:
+    """Normalize a raw site rating string to the canonical vocabulary (general/sensitive/questionable/explicit), or None if unrecognized."""
     return None if raw is None else RATING_NORMALIZE.get(str(raw).strip().lower())
 
 
 def _passes(rating: Optional[str], accepted: Set[str]) -> bool:
+    """Return True if a normalized rating is allowed by the accepted set. An unknown (None) rating passes only when all four ratings are accepted."""
     if rating is None:
         return len(accepted) == 4
     return rating in accepted
@@ -72,6 +75,7 @@ def _passes(rating: Optional[str], accepted: Set[str]) -> bool:
 # Per-POST extractors (operate on one post dict). kind = gelbooru|e621|danbooru
 # --------------------------------------------------------------------------- #
 def _purl_gelbooru(post):
+    """Extract (image_url, rating) from one Gelbooru-style post, building the safebooru file_url from directory+image when file_url is absent."""
     url = post.get("file_url")
     if not url and post.get("directory") is not None and post.get("image"):
         url = f"https://safebooru.org/images/{post['directory']}/{post['image']}"
@@ -79,10 +83,12 @@ def _purl_gelbooru(post):
 
 
 def _purl_e621(post):
+    """Extract (image_url, rating) from one e621 post (file.url + rating)."""
     return (post.get("file") or {}).get("url"), _norm_rating(post.get("rating"))
 
 
 def _purl_danbooru(post):
+    """Extract (image_url, rating) from one danbooru post, preferring large_file_url over file_url."""
     return (post.get("large_file_url") or post.get("file_url")), _norm_rating(post.get("rating"))
 
 
@@ -92,28 +98,34 @@ _MOEBOORU_RATING = {"s": "general", "safe": "general", "q": "questionable",
 
 
 def _purl_moebooru(post):
+    """Extract (image_url, rating) from one Moebooru post. Note: Moebooru 's' means SAFE (-> general), unlike Gelbooru where 's' is sensitive."""
     r = str(post.get("rating", "")).strip().lower()
     return post.get("file_url"), _MOEBOORU_RATING.get(r)
 
 
 def _ptags_moebooru(post):
+    """Return the tag set from a Moebooru post (space-separated 'tags' string)."""
     return set((post.get("tags") or "").split())
 
 
 def _ptags_gelbooru(post) -> Set[str]:
+    """Return the tag set from a Gelbooru-style post (space-separated 'tags' string)."""
     return set((post.get("tags") or "").split())
 
 
 def _ptags_e621(post) -> Set[str]:
+    """Return the flattened tag set from an e621 post (union of all tag-category lists)."""
     t = post.get("tags") or {}
     return set(x for v in t.values() for x in (v or []))
 
 
 def _ptags_danbooru(post) -> Set[str]:
+    """Return the tag set from a danbooru post ('tag_string')."""
     return set((post.get("tag_string") or "").split())
 
 
 def _pid(post):
+    """Return a post's numeric id."""
     return post.get("id")
 
 
@@ -122,6 +134,7 @@ GIF_EXTS = {"gif"}
 
 
 def _ext_from_url(url) -> str:
+    """Return the lowercase file extension from a URL path, or '' when there is none."""
     if not url:
         return ""
     path = urllib.parse.urlparse(url).path
@@ -129,6 +142,7 @@ def _ext_from_url(url) -> str:
 
 
 def media_type(ext) -> str:
+    """Classify a file extension as 'video', 'gif', or 'image'."""
     ext = (ext or "").lower().lstrip(".")
     if ext in VIDEO_EXTS:
         return "video"
@@ -191,6 +205,7 @@ def _posts_list(kind: str, body: Any) -> List[dict]:
 
 
 def _single_post(kind: str, body: Any):
+    """Return the first/only post dict from an API response, handling e621's singular 'post' key (vs the plural 'posts' used by searches)."""
     # e621's single-id endpoint uses singular "post"; search uses plural "posts".
     if kind == "e621":
         post = body.get("post") if isinstance(body, dict) else None
@@ -201,21 +216,25 @@ def _single_post(kind: str, body: Any):
 
 # Back-compat body-level extractors (used by resolve() and the unit tests).
 def _extract_gelbooru_style(body: Any):
+    """Body-level (image_url, rating) extractor for a Gelbooru-style single-id response."""
     p = _single_post("gelbooru", body)
     return _purl_gelbooru(p) if p else (None, None)
 
 
 def _extract_e621(body: Any):
+    """Body-level (image_url, rating) extractor for an e621 single-id response."""
     p = _single_post("e621", body)
     return _purl_e621(p) if p else (None, None)
 
 
 def _extract_danbooru(body: Any):
+    """Body-level (image_url, rating) extractor for a danbooru single-id response."""
     p = _single_post("danbooru", body)
     return _purl_danbooru(p) if p else (None, None)
 
 
 def _extract_moebooru(body: Any):
+    """Body-level (image_url, rating) extractor for a Moebooru single-id response."""
     p = _single_post("moebooru", body)
     return _purl_moebooru(p) if p else (None, None)
 
@@ -270,11 +289,13 @@ _locks_guard = threading.Lock()
 
 
 def _site_lock(site: str) -> threading.Lock:
+    """Return (creating on first use) the per-site lock that serializes throttling for that site."""
     with _locks_guard:
         return _locks.setdefault(site, threading.Lock())
 
 
 def _throttle(site: str, min_interval: float):
+    """Block until at least min_interval seconds have elapsed since the last request to this site (thread-safe, per site)."""
     with _site_lock(site):
         wait = min_interval - (time.monotonic() - _last_call.get(site, 0.0))
         if wait > 0:
@@ -394,5 +415,6 @@ POST_URL = {
 
 
 def post_url(site: str, post_id) -> Optional[str]:
+    """Return the human-viewable post-page URL for a site and post id, or None if the site is unknown."""
     tmpl = POST_URL.get(site)
     return tmpl.format(id=post_id) if tmpl else None

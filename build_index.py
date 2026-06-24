@@ -57,6 +57,7 @@ def embed_images(image_paths, batch=32):
 
 
 def build(embs, ids, out_dir, big=False):
+    """Build, save, and describe a FAISS cosine index from embeddings: writes knn.index, ids.npy, and infos.json. Uses the deepghs OPQ/IVF/PQ recipe when big=True, else a lighter IVF/Flat factory."""
     os.makedirs(out_dir, exist_ok=True)
     embs = embs.astype(np.float32).copy()
     faiss.normalize_L2(embs)                      # cosine via inner product
@@ -83,6 +84,7 @@ def build(embs, ids, out_dir, big=False):
 
 
 def main():
+    """CLI entry point (Route B): embed every image in --images with WD14 and build an index into --out."""
     ap = argparse.ArgumentParser(description="Build a booru FAISS index (Route B).")
     ap.add_argument("--images", required=True, help="dir of <postid>.jpg/png/webp")
     ap.add_argument("--out", required=True, help="output index dir")

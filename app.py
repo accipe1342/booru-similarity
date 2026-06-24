@@ -10,6 +10,8 @@ UI: tabs (Image search / Tag search / Settings), Soft theme, live status,
 in-UI errors, interactive tag chips, and clickable thumbnails that open the
 original post. Mirror thumbnails are inlined as data URIs (nothing extra on disk).
 """
+__version__ = "1.0.0"
+
 import os
 import warnings
 
@@ -72,6 +74,7 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".booru_similarity.json")
 
 
 def load_config() -> dict:
+    """Load persisted user settings from CONFIG_PATH; return an empty dict if the file is missing or unreadable."""
     try:
         with open(CONFIG_PATH) as f:
             return json.load(f)
@@ -80,6 +83,7 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> bool:
+    """Write the settings dict to CONFIG_PATH as JSON (owner-only file mode where the OS supports it). Return True on success."""
     try:
         with open(CONFIG_PATH, "w") as f:
             json.dump(cfg, f)
@@ -93,6 +97,7 @@ def save_config(cfg: dict) -> bool:
 
 
 def _apply_saved() -> dict:
+    """On startup, load saved config and apply stored booru credentials and e621 contact to the resolver. Return the loaded config dict."""
     cfg = load_config()
     if cfg.get("rule34_key") and cfg.get("rule34_uid"):
         booru_resolver.set_credentials("rule34", cfg["rule34_key"], cfg["rule34_uid"])
@@ -111,6 +116,7 @@ SAVED = _apply_saved()
 # Helpers
 # --------------------------------------------------------------------------- #
 def purge_results() -> None:
+    """Delete every cached result image under RESULTS_TMP (best-effort; ignores files still locked)."""
     for name in os.listdir(RESULTS_TMP):
         p = os.path.join(RESULTS_TMP, name)
         try:
@@ -124,6 +130,7 @@ atexit.register(purge_results)
 
 @ts_lru_cache(maxsize=2)
 def _load_index(repo_id, repo_type, model_name):
+    """Download and cache a FAISS index's ids.npy/knn.index/infos.json from HuggingFace and return (ids, index) with search parameters applied. Cached via ts_lru_cache."""
     ids = np.load(hf_client.hf_hub_download(
         repo_id=repo_id, repo_type=repo_type, filename=f"{model_name}/ids.npy"))
     index = faiss.read_index(hf_client.hf_hub_download(
@@ -135,6 +142,7 @@ def _load_index(repo_id, repo_type, model_name):
 
 
 def _raw_ids(neighbour_ids, site, id_style) -> List[str]:
+    """Normalize FAISS-returned neighbour ids into 'site_postid' strings, handling both already-prefixed ids and bare integers (prefixing with the index's site)."""
     out = []
     for x in neighbour_ids:
         s = str(x).strip()
@@ -143,6 +151,7 @@ def _raw_ids(neighbour_ids, site, id_style) -> List[str]:
 
 
 def _fetch_mirror(raw_ids: List[str]) -> Dict[str, Image.Image]:
+    """Download result webps from deepghs HuggingFace mirrors via cheesechaser. Return a mapping of 'site_postid' -> PIL image. Requires an HF token for the gated mirrors."""
     from cheesechaser.datapool import (
         DanbooruNewestWebpDataPool, GelbooruWebpDataPool, Rule34WebpDataPool,
         YandeWebpDataPool, KonachanWebpDataPool, ZerochanWebpDataPool,
@@ -173,6 +182,7 @@ def _fetch_mirror(raw_ids: List[str]) -> Dict[str, Image.Image]:
 
 
 def _predict(img):
+    """Run the WD14 SwinV2_v3 tagger on an image and return (normalized 1024-d embedding, top predicted tag list, tag string, tag set, {tag: confidence} for the top 15)."""
     emb, _r, general, _c = wd14.get_wd14_tags(
         img, model_name="SwinV2_v3", fmt=("embedding", "rating", "general", "character"))
     ordered = sorted(general.items(), key=lambda kv: kv[1], reverse=True)
@@ -210,6 +220,7 @@ def _embed(img, text):
 
 
 def _log_providers():
+    """Print the ONNX Runtime execution providers available at runtime so GPU acceleration (CUDA/DirectML) can be confirmed."""
     try:
         import onnxruntime as ort
         print("[onnx] available providers:", ort.get_available_providers(),
@@ -219,6 +230,7 @@ def _log_providers():
 
 
 def _pil_to_datauri(im: Image.Image, size: int = 256) -> str:
+    """Encode a PIL image as a base64 JPEG data-URI thumbnail (longest edge <= size px) so it can be embedded inline in the results grid without writing to disk."""
     t = im.convert("RGB").copy()
     t.thumbnail((size, size))
     buf = io.BytesIO(); t.save(buf, format="JPEG", quality=85)
@@ -253,6 +265,7 @@ def _grid(cards) -> str:
 # --------------------------------------------------------------------------- #
 def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accepted_ratings,
                    rerank, media_types, auto_clean, progress=gr.Progress()):
+    """Image / text / blended similarity search handler. Embeds the query, runs FAISS KNN over the selected index, resolves neighbours to images (mirror or live), optionally reranks by tag overlap, and filters by rating + media type. Returns (results_html, tag_chips_update, seed_tag_string, status_md, confidence_dict)."""
     blank_chips = gr.update(choices=[], value=[])
     blank_conf = {}
     if img_input is None and not (text_query or "").strip():
@@ -335,6 +348,7 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
 
 def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, media_types, auto_clean,
                    progress=gr.Progress()):
+    """Native booru tag-search handler: queries the selected site's API for the given tags (rating + media filtered) and returns (results_html, status_md)."""
     if not tags_text or not tags_text.strip():
         return "", "_Enter some tags first._"
     try:
@@ -371,10 +385,12 @@ def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, media_types,
 
 
 def send_chips(selected):
+    """Join the ticked detected-tag chips into a space-separated string to populate the Tag-search box."""
     return " ".join(selected or [])
 
 
 def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid, remember_creds):
+    """Apply the HF token, e621 contact User-Agent, and rule34/gelbooru API credentials at runtime; optionally persist the booru credentials to disk. Returns a status message (with secrets redacted)."""
     global hf_client
     msgs = []
     if token and token.strip():
@@ -418,11 +434,13 @@ def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid, 
 
 
 def clear_image_tab():
+    """Reset all Image-search tab outputs (results, chips, boxes, status, confidence) and purge cached result images."""
     purge_results()
     return "", gr.update(choices=[], value=[]), "", "", "", {}
 
 
 def clear_tag_tab():
+    """Reset the Tag-search tab outputs and purge cached result images."""
     purge_results()
     return "", ""
 
@@ -446,6 +464,7 @@ except Exception:  # invalid theme token on some versions -> plain Soft
 
 
 def build_ui():
+    """Construct and return the Gradio Blocks UI: the Image/Tag/Settings tabs, all controls, and the event wiring."""
     with gr.Blocks(theme=THEME, title="Booru Similarity") as demo:
         gr.Markdown("# 🔎 Multi-Booru Image Similarity & Tag Search")
         gr.Markdown("Find visually similar posts across rule34 · gelbooru · danbooru "
