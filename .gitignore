@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+# downloaded indices / models / images
+indices/
+*.index
+*.npy
+data/
+*.webp
+.gradio/
+.DS_Store
