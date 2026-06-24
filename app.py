@@ -6,18 +6,20 @@ Pipeline: image --> WD14 SwinV2_v3 (1024-d embedding + predicted tags)
           --> FAISS cosine KNN over a prebuilt index --> nearest post ids
           --> resolve to images (+ original post links).
 
-UI: three tabs (Image search / Tag search / Settings), live status messages,
-in-UI error reporting, tag-overlap rerank, editable tags, post links, and
-auto-deletion of downloaded result images.
+UI: tabs (Image search / Tag search / Settings), Soft theme, live status,
+in-UI errors, interactive tag chips, and clickable thumbnails that open the
+original post. Mirror thumbnails are inlined as data URIs (nothing extra on disk).
 """
 import os
 
-# Pin Gradio's file cache to a folder WE control (set BEFORE importing gradio).
 RESULTS_TMP = os.path.abspath(
     os.environ.setdefault("GRADIO_TEMP_DIR", os.path.join(os.getcwd(), "_gradio_tmp")))
 os.makedirs(RESULTS_TMP, exist_ok=True)
 
 import atexit
+import base64
+import html as html_lib
+import io
 import json
 import re
 import shutil
@@ -35,7 +37,6 @@ from hfutils.operate import get_hf_client
 
 import resolver as booru_resolver
 
-# friendly name -> (repo_id, repo_type, model_name, site, id_style)
 INDEXES = {
     "rule34 (~10M)":     ("deepghs/anime_sites_indices", "model", "SwinV2_v3_rule34_9972271_4GB",   "rule34",   "bare"),
     "gelbooru (~10M)":   ("deepghs/anime_sites_indices", "model", "SwinV2_v3_gelbooru_10067238_4GB", "gelbooru", "bare"),
@@ -44,9 +45,9 @@ INDEXES = {
 }
 SITES = ["rule34", "gelbooru", "safebooru", "e621", "danbooru"]
 DEFAULT_MODE = os.environ.get("RETRIEVAL_MODE", "mirror")
-hf_client = get_hf_client()
 _RATINGS = ["general", "sensitive", "questionable", "explicit"]
 N_TAGS_USED = 20
+hf_client = get_hf_client()
 
 
 # --------------------------------------------------------------------------- #
@@ -113,37 +114,54 @@ def _predict(img):
     emb, _r, general, _c = wd14.get_wd14_tags(
         img, model_name="SwinV2_v3", fmt=("embedding", "rating", "general", "character"))
     ordered = sorted(general.items(), key=lambda kv: kv[1], reverse=True)
-    label = {k: float(v) for k, v in ordered[:15]}
     pred = [k.replace(" ", "_") for k, _ in ordered[:N_TAGS_USED]]
     emb = np.expand_dims(np.asarray(emb, dtype=np.float32), 0)
     faiss.normalize_L2(emb)
-    return emb, label, " ".join(pred), set(pred)
+    return emb, pred, " ".join(pred), set(pred)
 
 
-def _links_md(rows) -> str:
-    if not rows:
+def _pil_to_datauri(im: Image.Image, size: int = 256) -> str:
+    t = im.convert("RGB").copy()
+    t.thumbnail((size, size))
+    buf = io.BytesIO(); t.save(buf, format="JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _grid(cards) -> str:
+    """cards: list of (img_src, post_url, caption) -> clickable thumbnail grid."""
+    if not cards:
         return ""
-    lines = ["### Post links"]
-    for site, pid, label in rows:
-        url = booru_resolver.post_url(site, pid)
-        lines.append(f"- [{label}]({url})" if url else f"- {label}")
-    return "\n".join(lines)
+    cells = []
+    for src, post, cap in cards:
+        cap = html_lib.escape(cap)
+        href = f' href="{html_lib.escape(post)}" target="_blank" rel="noopener"' if post else ""
+        cells.append(
+            f'<a{href} style="text-decoration:none;color:inherit">'
+            f'<div style="width:180px;margin:6px;display:inline-block;vertical-align:top">'
+            f'<img src="{src}" loading="lazy" '
+            f'style="width:180px;height:180px;object-fit:cover;border-radius:10px;'
+            f'box-shadow:0 1px 4px rgba(0,0,0,.3)">'
+            f'<div style="font-size:11px;opacity:.75;margin-top:3px">{cap}</div>'
+            f'</div></a>')
+    return ('<div style="display:flex;flex-wrap:wrap;justify-content:flex-start">'
+            + "".join(cells) + "</div>")
 
 
 # --------------------------------------------------------------------------- #
-# Handler: visual similarity search
+# Handlers
 # --------------------------------------------------------------------------- #
 def run_similarity(img_input, index_name, mode, n_neighbours, accepted_ratings,
                    rerank, auto_clean, progress=gr.Progress()):
+    blank_chips = gr.update(choices=[], value=[])
     if img_input is None:
-        return [], {}, "", "_Upload an image first._", ""
+        return "", blank_chips, "", "_Upload an image first._"
     try:
         if auto_clean:
             purge_results()
         repo_id, repo_type, model_name, site, id_style = INDEXES[index_name]
 
         progress(0.05, desc="Embedding image (WD14)…")
-        emb, label, seed_tags, pred_set = _predict(img_input)
+        emb, pred_list, seed_tags, pred_set = _predict(img_input)
 
         progress(0.3, desc="Loading index (first use downloads several GB)…")
         ids, index = _load_index(repo_id, repo_type, model_name)
@@ -154,7 +172,7 @@ def run_similarity(img_input, index_name, mode, n_neighbours, accepted_ratings,
         accepted = set(accepted_ratings)
         sess = requests.Session()
 
-        items = []
+        items = []  # (rid, dist, media, tags)
         if mode == "live":
             progress(0.7, desc="Fetching posts from booru API…")
             for rid, dist in zip(raw_ids, dists[0]):
@@ -180,33 +198,30 @@ def run_similarity(img_input, index_name, mode, n_neighbours, accepted_ratings,
         if rerank:
             items.sort(key=lambda it: (-len(pred_set & it[3]), -it[1]))
 
-        results, link_rows = [], []
+        cards = []
         for rid, dist, media, tags in items:
             s, num = rid.rsplit("_", 1)
             ov = len(pred_set & tags)
             cap = f"{rid} / {dist:.2f}" + (f" | tags:{ov}" if rerank else "")
-            results.append((media, cap))
-            link_rows.append((s, num, cap))
+            src = media if isinstance(media, str) else _pil_to_datauri(media)
+            cards.append((src, booru_resolver.post_url(s, num), cap))
 
         progress(1.0, desc="Done")
-        if not results:
-            hint = ("No images returned. " + (
-                "Mirror mode needs a valid HF token (Settings tab)."
-                if mode == "mirror" else
-                "Try enabling more ratings, or the booru API may be rate-limiting."))
-            return [], label, seed_tags, f"⚠️ {hint}", ""
-        return results, label, seed_tags, f"✅ {len(results)} results.", _links_md(link_rows)
+        chips = gr.update(choices=pred_list, value=[])
+        if not cards:
+            hint = ("Mirror mode needs a valid HF token (Settings tab)."
+                    if mode == "mirror" else
+                    "Try enabling more ratings, or the API may be rate-limiting.")
+            return "", chips, seed_tags, f"⚠️ No images returned. {hint}"
+        return _grid(cards), chips, seed_tags, f"✅ {len(cards)} results."
     except Exception as e:  # noqa: BLE001
-        return [], {}, "", f"❌ Error: {e}", ""
+        return "", blank_chips, "", f"❌ Error: {e}"
 
 
-# --------------------------------------------------------------------------- #
-# Handler: native tag search
-# --------------------------------------------------------------------------- #
 def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, auto_clean,
                    progress=gr.Progress()):
     if not tags_text or not tags_text.strip():
-        return [], "_Enter some tags first._"
+        return "", "_Enter some tags first._"
     try:
         if auto_clean:
             purge_results()
@@ -217,20 +232,19 @@ def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, auto_clean,
         hits = booru_resolver.tag_search(site, tags[:cap], n_neighbours, accepted,
                                          session=requests.Session())
         progress(1.0, desc="Done")
-        results, link_rows = [], []
-        for h in hits:
-            if not h["url"]:
-                continue
-            label = f"{site}_{h['id']}"
-            results.append((h["url"], label))
-            link_rows.append((site, h["id"], label))
+        cards = [(h["url"], booru_resolver.post_url(site, h["id"]), f"{site}_{h['id']}")
+                 for h in hits if h["url"]]
         note = (f"Searched **{site}** for: `{' '.join(tags[:cap])}`"
                 + ("" if len(tags) <= cap else f"  _(capped at {cap} tags)_"))
-        body = _links_md(link_rows) if link_rows else \
-            "_No results — tags may not match this site's vocabulary._"
-        return results, note + "\n\n" + body
+        if not cards:
+            return "", note + "\n\n_No results — tags may not match this site._"
+        return _grid(cards), note + f"  ·  {len(cards)} results."
     except Exception as e:  # noqa: BLE001
-        return [], f"❌ Error: {e}"
+        return "", f"❌ Error: {e}"
+
+
+def send_chips(selected):
+    return " ".join(selected or [])
 
 
 def apply_settings(token, persist, contact):
@@ -258,72 +272,81 @@ def apply_settings(token, persist, contact):
 
 def clear_image_tab():
     purge_results()
-    return [], {}, "", "", ""
+    return "", gr.update(choices=[], value=[]), "", ""
 
 
 def clear_tag_tab():
     purge_results()
-    return [], ""
+    return "", ""
 
 
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
+THEME = gr.themes.Soft(primary_hue="orange", neutral_hue="slate")
+
+
 def build_ui():
-    with gr.Blocks(title="Booru Similarity") as demo:
-        gr.Markdown("## Multi-Booru Image Similarity & Tag Search")
+    with gr.Blocks(theme=THEME, title="Booru Similarity") as demo:
+        gr.Markdown("# 🔎 Multi-Booru Image Similarity & Tag Search")
+        gr.Markdown("Find visually similar posts across rule34 · gelbooru · danbooru "
+                    "(and e621 · safebooru via your own indices). Click any result to "
+                    "open its original post.")
 
         with gr.Tab("🔍 Image search"):
-            with gr.Row():
-                img_input = gr.Image(type="pil", label="Input")
+            with gr.Row(equal_height=True):
+                img_input = gr.Image(type="pil", label="Input", height=420)
                 with gr.Column():
-                    index_name = gr.Dropdown(choices=list(INDEXES), value=list(INDEXES)[0],
-                                             label="Index / site")
-                    mode = gr.Radio(choices=["mirror", "live"], value=DEFAULT_MODE,
-                                    label="Retrieval mode",
-                                    info="mirror = HF mirrors (needs HF token). "
-                                         "live = booru API (original posts + ratings).")
-                    n_img = gr.Slider(1, 50, value=20, step=1, label="# of images")
-                    ratings_img = gr.CheckboxGroup(choices=_RATINGS,
-                                                   value=["general", "sensitive"],
-                                                   label="Allowed ratings (live mode)")
-                    rerank = gr.Checkbox(value=False, label="Rerank by tag overlap")
-                    auto_clean_img = gr.Checkbox(value=True,
-                                                 label="Delete result images each search")
+                    with gr.Group():
+                        index_name = gr.Dropdown(choices=list(INDEXES),
+                                                 value=list(INDEXES)[0], label="Index / site")
+                        mode = gr.Radio(choices=["mirror", "live"], value=DEFAULT_MODE,
+                                        label="Retrieval mode",
+                                        info="mirror = HF mirrors (needs HF token). "
+                                             "live = booru API (original posts + ratings).")
+                        n_img = gr.Slider(1, 50, value=20, step=1, label="# of images")
+                        ratings_img = gr.CheckboxGroup(choices=_RATINGS,
+                                                       value=["general", "sensitive"],
+                                                       label="Allowed ratings (live mode)")
+                        with gr.Accordion("Advanced", open=False):
+                            rerank = gr.Checkbox(value=False, label="Rerank by tag overlap")
+                            auto_clean_img = gr.Checkbox(value=True,
+                                                         label="Delete result images each search")
                     with gr.Row():
-                        find_btn = gr.Button("Find similar", variant="primary")
-                        clear_img_btn = gr.Button("Clear")
+                        find_btn = gr.Button("Find similar", variant="primary", scale=2)
+                        clear_img_btn = gr.Button("Clear", scale=1)
             status_img = gr.Markdown()
-            gallery_img = gr.Gallery(label="Results", columns=[5])
-            tags_label = gr.Label(label="Detected tags (confidence)", num_top_classes=15)
-            links_img = gr.Markdown()
+            results_img = gr.HTML()
+            with gr.Accordion("🏷️ Detected tags", open=True):
+                tag_chips = gr.CheckboxGroup(choices=[], label="Tick tags, then send to Tag search")
+                send_btn = gr.Button("Use selected → Tag search")
 
         with gr.Tab("🏷️ Tag search"):
-            gr.Markdown("Tags auto-fill here after an image search. Edit them, pick a "
-                        "site, and search. (WD14 predicts danbooru-vocab tags; rename "
-                        "as needed for other sites. danbooru allows only 2 tags.)")
-            tags_box = gr.Textbox(label="Tags", lines=3,
+            gr.Markdown("Tags auto-fill from your last image search. Edit them, pick a site, "
+                        "and search. WD14 predicts **danbooru-vocabulary** tags — rename for "
+                        "other sites. danbooru allows only 2 tags per search.")
+            tags_box = gr.Textbox(label="Tags", lines=2,
                                   placeholder="e.g. 1girl solo blue_hair smile")
             with gr.Row():
                 site_dd = gr.Dropdown(choices=SITES, value="rule34", label="Site")
                 n_tag = gr.Slider(1, 50, value=20, step=1, label="# of images")
             ratings_tag = gr.CheckboxGroup(choices=_RATINGS, value=["general", "sensitive"],
                                            label="Allowed ratings")
-            auto_clean_tag = gr.Checkbox(value=True, label="Delete result images each search")
+            with gr.Accordion("Advanced", open=False):
+                auto_clean_tag = gr.Checkbox(value=True, label="Delete result images each search")
             with gr.Row():
-                tag_btn = gr.Button("Search these tags", variant="primary")
-                clear_tag_btn = gr.Button("Clear")
+                tag_btn = gr.Button("Search these tags", variant="primary", scale=2)
+                clear_tag_btn = gr.Button("Clear", scale=1)
             status_tag = gr.Markdown()
-            gallery_tag = gr.Gallery(label="Results", columns=[5])
+            results_tag = gr.HTML()
 
         with gr.Tab("⚙️ Settings"):
             gr.Markdown(
                 "Mirror mode needs a HuggingFace token (the booru mirrors are gated). "
                 "Use a **read-only** token from https://huggingface.co/settings/tokens. "
-                "'Remember' stores it locally via the standard HF login; otherwise it "
-                "lasts only for this session. Never commit your token.")
-            hf_token = gr.Textbox(label="HuggingFace token", type="password",
-                                  placeholder="hf_...")
+                "'Remember' stores it locally via the standard HF login; otherwise it lasts "
+                "only this session. Never commit your token.")
+            hf_token = gr.Textbox(label="HuggingFace token", type="password", placeholder="hf_...")
             remember = gr.Checkbox(value=False, label="Remember on this machine")
             contact = gr.Textbox(label="e621 contact email (API User-Agent)",
                                  placeholder="you@example.com")
@@ -332,20 +355,23 @@ def build_ui():
             apply_btn.click(apply_settings, inputs=[hf_token, remember, contact],
                             outputs=[settings_status])
 
-        # wiring (inputs order == handler signature order)
+        gr.Markdown("---\n<sub>Self-hosted. Mostly NSFW sources — use responsibly and follow "
+                    "each site's API terms. Indices & mirrors by deepghs.</sub>")
+
         find_btn.click(
             run_similarity,
             inputs=[img_input, index_name, mode, n_img, ratings_img, rerank, auto_clean_img],
-            outputs=[gallery_img, tags_label, tags_box, status_img, links_img],
+            outputs=[results_img, tag_chips, tags_box, status_img],
         )
         clear_img_btn.click(clear_image_tab,
-                            outputs=[gallery_img, tags_label, tags_box, status_img, links_img])
+                            outputs=[results_img, tag_chips, tags_box, status_img])
+        send_btn.click(send_chips, inputs=[tag_chips], outputs=[tags_box])
         tag_btn.click(
             run_tag_search,
             inputs=[tags_box, site_dd, n_tag, ratings_tag, auto_clean_tag],
-            outputs=[gallery_tag, status_tag],
+            outputs=[results_tag, status_tag],
         )
-        clear_tag_btn.click(clear_tag_tab, outputs=[gallery_tag, status_tag])
+        clear_tag_btn.click(clear_tag_tab, outputs=[results_tag, status_tag])
     return demo
 
 
