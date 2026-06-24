@@ -205,7 +205,7 @@ def _grid(cards) -> str:
 # Handlers
 # --------------------------------------------------------------------------- #
 def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accepted_ratings,
-                   rerank, auto_clean, progress=gr.Progress()):
+                   rerank, media_types, auto_clean, progress=gr.Progress()):
     blank_chips = gr.update(choices=[], value=[])
     if img_input is None and not (text_query or "").strip():
         return "", blank_chips, "", "_Upload an image or enter a text query._"
@@ -213,6 +213,7 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
         if auto_clean:
             purge_results()
         repo_id, repo_type, model_name, site, id_style = INDEXES[index_name]
+        media_types = set(media_types or [])
 
         progress(0.05, desc="Embedding query…")
         emb, pred_list, seed_tags, pred_set = _embed(img_input, text_query)
@@ -226,7 +227,7 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
         accepted = set(accepted_ratings)
         sess = requests.Session()
 
-        items = []  # (rid, dist, media, tags)
+        items = []  # (rid, dist, media, tags, mtype)
         if mode == "live":
             progress(0.7, desc="Fetching posts from booru API…")
             for rid, dist in zip(raw_ids, dists[0]):
@@ -236,8 +237,15 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
                 m = booru_resolver.fetch_meta(s, int(num), session=sess)
                 if not m or not m["url"] or not booru_resolver._passes(m["rating"], accepted):
                     continue
-                items.append((rid, dist, m["url"], m["tags"]))
+                if m["type"] not in media_types:
+                    continue
+                thumb = m["preview"] if (m["type"] == "video" and m["preview"]) else m["url"]
+                items.append((rid, dist, thumb, m["tags"], m["type"]))
         else:
+            if "image" not in media_types:
+                progress(1.0, desc="Done")
+                return ("", gr.update(choices=pred_list, value=[]), seed_tags,
+                        "⚠️ Mirror mode only returns static images; enable 'image' in Media types.")
             progress(0.7, desc="Downloading images from HF mirror…")
             img_map = _fetch_mirror(raw_ids)
             tagmap = {}
@@ -251,16 +259,17 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
                     tagmap[rid] = m["tags"] if m else set()
             for rid, dist in zip(raw_ids, dists[0]):
                 if rid in img_map:
-                    items.append((rid, dist, img_map[rid], tagmap.get(rid, set())))
+                    items.append((rid, dist, img_map[rid], tagmap.get(rid, set()), "image"))
 
         if rerank:
             items.sort(key=lambda it: (-len(pred_set & it[3]), -it[1]))
 
         cards = []
-        for rid, dist, media, tags in items:
+        for rid, dist, media, tags, mtype in items:
             s, num = rid.rsplit("_", 1)
             ov = len(pred_set & tags)
-            cap = f"{rid} / {dist:.2f}" + (f" | tags:{ov}" if rerank else "")
+            badge = " ▶" if mtype == "video" else (" 🎞" if mtype == "gif" else "")
+            cap = f"{rid} / {dist:.2f}{badge}" + (f" | tags:{ov}" if rerank else "")
             src = media if isinstance(media, str) else _pil_to_datauri(media)
             cards.append((src, booru_resolver.post_url(s, num), cap))
 
@@ -269,14 +278,14 @@ def run_similarity(img_input, text_query, index_name, mode, n_neighbours, accept
         if not cards:
             hint = ("Mirror mode needs a valid HF token (Settings tab)."
                     if mode == "mirror" else
-                    "Try enabling more ratings, or the API may be rate-limiting.")
+                    "Try more ratings/media types, or the API may be rate-limiting.")
             return "", chips, seed_tags, f"⚠️ No images returned. {hint}"
         return _grid(cards), chips, seed_tags, f"✅ {len(cards)} results."
     except Exception as e:  # noqa: BLE001
         return "", blank_chips, "", f"❌ Error: {booru_resolver.redact(e)}"
 
 
-def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, auto_clean,
+def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, media_types, auto_clean,
                    progress=gr.Progress()):
     if not tags_text or not tags_text.strip():
         return "", "_Enter some tags first._"
@@ -284,18 +293,24 @@ def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, auto_clean,
         if auto_clean:
             purge_results()
         accepted = set(accepted_ratings)
+        media_types = set(media_types or [])
         tags = [t for t in re.split(r"[,\s]+", tags_text.strip()) if t]
         cap = booru_resolver.TAG_SEARCH_LIMIT.get(site, 6)
         progress(0.3, desc=f"Searching {site} tags…")
         hits = booru_resolver.tag_search(site, tags[:cap], n_neighbours, accepted,
                                          session=requests.Session())
         progress(1.0, desc="Done")
-        cards = [(h["url"], booru_resolver.post_url(site, h["id"]), f"{site}_{h['id']}")
-                 for h in hits if h["url"]]
+        cards = []
+        for h in hits:
+            if not h["url"] or h["type"] not in media_types:
+                continue
+            thumb = h["preview"] if (h["type"] == "video" and h["preview"]) else h["url"]
+            badge = " ▶" if h["type"] == "video" else (" 🎞" if h["type"] == "gif" else "")
+            cards.append((thumb, booru_resolver.post_url(site, h["id"]), f"{site}_{h['id']}{badge}"))
         note = (f"Searched **{site}** for: `{' '.join(tags[:cap])}`"
                 + ("" if len(tags) <= cap else f"  _(capped at {cap} tags)_"))
         if not cards:
-            return "", note + "\n\n_No results — tags may not match this site._"
+            return "", note + "\n\n_No results — tags may not match, or all filtered by rating/media type._"
         return _grid(cards), note + f"  ·  {len(cards)} results."
     except Exception as e:  # noqa: BLE001
         return "", f"❌ Error: {booru_resolver.redact(e)}"
@@ -382,6 +397,10 @@ def build_ui():
                                                        label="Allowed ratings (live mode)")
                         with gr.Accordion("Advanced", open=False):
                             rerank = gr.Checkbox(value=False, label="Rerank by tag overlap")
+                            media_types_img = gr.CheckboxGroup(
+                                choices=["image", "gif", "video"],
+                                value=["image", "gif", "video"],
+                                label="Media types (live mode; mirror is images only)")
                             auto_clean_img = gr.Checkbox(value=True,
                                                          label="Delete result images each search")
                     with gr.Row():
@@ -405,6 +424,9 @@ def build_ui():
             ratings_tag = gr.CheckboxGroup(choices=_RATINGS, value=["general", "sensitive"],
                                            label="Allowed ratings")
             with gr.Accordion("Advanced", open=False):
+                media_types_tag = gr.CheckboxGroup(
+                    choices=["image", "gif", "video"], value=["image", "gif", "video"],
+                    label="Media types")
                 auto_clean_tag = gr.Checkbox(value=True, label="Delete result images each search")
             with gr.Row():
                 tag_btn = gr.Button("Search these tags", variant="primary", scale=2)
@@ -441,7 +463,7 @@ def build_ui():
 
         find_btn.click(
             run_similarity,
-            inputs=[img_input, text_query, index_name, mode, n_img, ratings_img, rerank, auto_clean_img],
+            inputs=[img_input, text_query, index_name, mode, n_img, ratings_img, rerank, media_types_img, auto_clean_img],
             outputs=[results_img, tag_chips, tags_box, status_img],
             show_progress_on=[status_img],
         )
@@ -450,7 +472,7 @@ def build_ui():
         send_btn.click(send_chips, inputs=[tag_chips], outputs=[tags_box])
         tag_btn.click(
             run_tag_search,
-            inputs=[tags_box, site_dd, n_tag, ratings_tag, auto_clean_tag],
+            inputs=[tags_box, site_dd, n_tag, ratings_tag, media_types_tag, auto_clean_tag],
             outputs=[results_tag, status_tag],
             show_progress_on=[status_tag],
         )

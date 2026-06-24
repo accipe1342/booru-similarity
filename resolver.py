@@ -117,6 +117,43 @@ def _pid(post):
     return post.get("id")
 
 
+VIDEO_EXTS = {"webm", "mp4", "mov", "m4v", "avi", "mkv"}
+GIF_EXTS = {"gif"}
+
+
+def _ext_from_url(url) -> str:
+    if not url:
+        return ""
+    path = urllib.parse.urlparse(url).path
+    return path.rsplit(".", 1)[-1].lower() if "." in path else ""
+
+
+def media_type(ext) -> str:
+    ext = (ext or "").lower().lstrip(".")
+    if ext in VIDEO_EXTS:
+        return "video"
+    if ext in GIF_EXTS:
+        return "gif"
+    return "image"
+
+
+def _post_meta(kind: str, post) -> Dict:
+    """Full per-post info: url, rating, tags, ext, type (image/gif/video), preview."""
+    url, rating = _PURL[kind](post)
+    tags = _PTAGS[kind](post)
+    if kind == "e621":
+        ext = (post.get("file") or {}).get("ext") or _ext_from_url(url)
+        preview = (post.get("sample") or {}).get("url") or (post.get("preview") or {}).get("url")
+    elif kind == "danbooru":
+        ext = post.get("file_ext") or _ext_from_url(url)
+        preview = post.get("large_file_url") or post.get("preview_file_url")
+    else:  # gelbooru-style + moebooru
+        ext = _ext_from_url(url)
+        preview = post.get("sample_url") or post.get("preview_url")
+    return {"url": url, "rating": rating, "tags": tags,
+            "ext": (ext or "").lower(), "type": media_type(ext), "preview": preview}
+
+
 _PURL = {"gelbooru": _purl_gelbooru, "e621": _purl_e621, "danbooru": _purl_danbooru,
          "moebooru": _purl_moebooru}
 _PTAGS = {"gelbooru": _ptags_gelbooru, "e621": _ptags_e621, "danbooru": _ptags_danbooru,
@@ -315,8 +352,7 @@ def fetch_meta(site: str, post_id: int,
     post = _single_post(cfg["kind"], body)
     if not post:
         return None
-    url, rating = _PURL[cfg["kind"]](post)
-    return {"url": url, "rating": rating, "tags": _PTAGS[cfg["kind"]](post)}
+    return {"id": _pid(post), **_post_meta(cfg["kind"], post)}
 
 
 def tag_search(site: str, tags: List[str], limit: int, accepted_ratings: Set[str],
@@ -335,10 +371,9 @@ def tag_search(site: str, tags: List[str], limit: int, accepted_ratings: Set[str
         return []
     out = []
     for post in _posts_list(cfg["kind"], body):
-        u, rating = _PURL[cfg["kind"]](post)
-        if u and _passes(rating, accepted_ratings):
-            out.append({"id": _pid(post), "url": u, "rating": rating,
-                        "tags": _PTAGS[cfg["kind"]](post)})
+        meta = _post_meta(cfg["kind"], post)
+        if meta["url"] and _passes(meta["rating"], accepted_ratings):
+            out.append({"id": _pid(post), **meta})
     return out
 
 

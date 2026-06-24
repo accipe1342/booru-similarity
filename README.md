@@ -161,3 +161,11 @@ mode is unaffected — it uses the HF mirrors). Get an `api_key` + `user_id` fro
 your account on each site (Account → API access), enter them in the **Settings**
 tab, and click Apply. They're appended to every API call for that site. Without
 them, live/tag search on rule34/gelbooru returns "Missing authentication".
+
+## Media types (images / gifs / videos)
+
+Booru posts can be static images, gifs, or videos (webm/mp4). The **Media types**
+filter (Advanced, on both tabs) lets you include/exclude each. Videos are shown as
+their preview-image thumbnail with a ▶ badge (gifs get 🎞), and clicking still
+opens the post. Mirror mode only returns static images, so the filter mainly
+applies to live and tag search.

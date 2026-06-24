@@ -225,3 +225,24 @@ def test_redact():
     assert "api_key=***" in out and "user_id=***" in out
     assert resolver.redact("login=bob&password=hunter2") == "login=***&password=***"
     print("PASS redact strips api_key/user_id/login/password/token")
+
+
+def test_media_type():
+    assert resolver.media_type("jpg") == "image"
+    assert resolver.media_type("PNG") == "image"
+    assert resolver.media_type("gif") == "gif"
+    assert resolver.media_type("webm") == "video"
+    assert resolver.media_type("mp4") == "video"
+    assert resolver._ext_from_url("https://x/abc.webm?foo=1") == "webm"
+    assert resolver._ext_from_url("https://x/abc.JPG") == "jpg"
+    assert resolver._ext_from_url("https://x/noext") == ""
+    # full meta extraction incl preview + type
+    g = resolver._post_meta("gelbooru", {"file_url": "https://x/a.webm",
+                                          "sample_url": "https://x/a.jpg",
+                                          "rating": "e", "tags": "1girls"})
+    assert g["type"] == "video" and g["preview"] == "https://x/a.jpg" and g["ext"] == "webm"
+    e = resolver._post_meta("e621", {"file": {"url": "https://x/a.png", "ext": "png"},
+                                     "preview": {"url": "https://x/p.jpg"},
+                                     "rating": "s", "tags": {"general": ["a"]}})
+    assert e["type"] == "image" and e["preview"] == "https://x/p.jpg"
+    print("PASS media-type classification + per-post meta")
