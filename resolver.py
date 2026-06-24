@@ -83,25 +83,40 @@ _PTAGS = {"gelbooru": _ptags_gelbooru, "e621": _ptags_e621, "danbooru": _ptags_d
 # --------------------------------------------------------------------------- #
 # Body-level helpers: pull the post(s) out of a full API response by kind.
 # --------------------------------------------------------------------------- #
-def _single_post(kind: str, body: Any):
-    if kind == "gelbooru":
-        posts = body.get("post", []) if isinstance(body, dict) else body
-        return posts[0] if posts else None
-    if kind == "e621":
-        return body.get("post") if isinstance(body, dict) else None
-    if kind == "danbooru":
-        return body if isinstance(body, dict) and body else None
-    return None
-
-
 def _posts_list(kind: str, body: Any) -> List[dict]:
+    """Return a list of post dicts, tolerating single-object responses and junk.
+
+    Boorus sometimes return one match as a bare object instead of a 1-element
+    array (XML->JSON quirk), or wrap posts differently. Normalize all of it and
+    drop anything that isn't a dict so callers never crash on a stray string.
+    """
     if kind == "gelbooru":
-        return (body.get("post", []) if isinstance(body, dict) else body) or []
+        if isinstance(body, dict):
+            p = body.get("post")
+            if p is None:  # maybe the body itself is a single post
+                p = body if ("id" in body or "file_url" in body) else []
+        else:
+            p = body
+    elif kind == "e621":
+        p = body.get("posts") if isinstance(body, dict) else body
+    elif kind == "danbooru":
+        p = body
+    else:
+        return []
+    if isinstance(p, dict):
+        p = [p]
+    if not isinstance(p, list):
+        return []
+    return [x for x in p if isinstance(x, dict)]
+
+
+def _single_post(kind: str, body: Any):
+    # e621's single-id endpoint uses singular "post"; search uses plural "posts".
     if kind == "e621":
-        return (body.get("posts", []) if isinstance(body, dict) else []) or []
-    if kind == "danbooru":
-        return body if isinstance(body, list) else []
-    return []
+        post = body.get("post") if isinstance(body, dict) else None
+        return post if isinstance(post, dict) else None
+    posts = _posts_list(kind, body)
+    return posts[0] if posts else None
 
 
 # Back-compat body-level extractors (used by resolve() and the unit tests).

@@ -169,3 +169,19 @@ def test_tag_overlap_scoring():
 
 if __name__ == "__main__":
     pass
+
+
+def test_posts_list_robustness():
+    # single result returned as a bare object (the bug that crashed tag search)
+    assert resolver._posts_list("gelbooru", {"post": {"id": 1, "file_url": "u"}}) == [{"id": 1, "file_url": "u"}]
+    # body itself is one post (no "post" wrapper)
+    assert resolver._posts_list("gelbooru", {"id": 2, "file_url": "u"}) == [{"id": 2, "file_url": "u"}]
+    # stray non-dict entries are dropped, not crashed on
+    assert resolver._posts_list("gelbooru", ["junk", {"id": 3}]) == [{"id": 3}]
+    # e621 single + danbooru single
+    assert resolver._posts_list("e621", {"posts": {"id": 9}}) == [{"id": 9}]
+    assert resolver._posts_list("danbooru", {"id": 7}) == [{"id": 7}]
+    # empties
+    assert resolver._posts_list("gelbooru", {"post": []}) == []
+    assert resolver._posts_list("danbooru", "") == []
+    print("PASS posts-list robustness (single-object, junk, empties)")
