@@ -3,7 +3,7 @@
 [![CI](https://github.com/accipe1342/booru-similarity/actions/workflows/ci.yml/badge.svg)](https://github.com/accipe1342/booru-similarity/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-
+![App screenshot](example.png)
 Reverse-image search and tag search across multiple booru sites — **rule34, gelbooru,
 danbooru, e621, safebooru, yandere, konachan, zerochan, anime_pictures** — powered by
 the WD14 tagger, deepghs's prebuilt FAISS indices, and a SigLIP text encoder.
