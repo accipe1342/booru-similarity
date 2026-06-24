@@ -122,7 +122,7 @@ def _fetch_live(raw_ids: List[str], accepted) -> Dict[str, str]:
     return out
 
 
-def search(index_name, img_input, n_neighbours, mode, accepted_ratings):
+def search(img_input, index_name, mode, n_neighbours, accepted_ratings):
     if img_input is None:
         return []
     repo_id, repo_type, model_name, site, id_style = INDEXES[index_name]
@@ -159,24 +159,22 @@ def build_ui():
             with gr.Column():
                 index_name = gr.Dropdown(choices=list(INDEXES), value=list(INDEXES)[0],
                                          label="Index")
-                mode = gr.Radio(
-                    choices=["mirror", "live"], value=DEFAULT_MODE, label="Retrieval mode",
-                    info="mirror = images from deepghs HF mirrors (no booru traffic). "
-                         "live = original post URLs from the booru API + rating filter.")
+                mode = gr.Radio(choices=["mirror", "live"], value=DEFAULT_MODE,
+                                label="Retrieval mode",
+                                info="mirror = images from deepghs HF mirrors (no booru traffic). "
+                                     "live = original post URLs from the booru API + rating filter.")
                 n_neighbours = gr.Slider(1, 50, value=20, step=1, label="# of images")
                 accepted = gr.CheckboxGroup(choices=_RATINGS, value=["general", "sensitive"],
-                                            label="Allowed ratings (live mode only)")
+                                            label="Allowed ratings (applies to live mode only)")
                 find_btn = gr.Button("Find similar images", variant="primary")
         gallery = gr.Gallery(label="Similar images", columns=[5])
 
-        # Show the rating filter only when it actually applies.
-        def _toggle(m):
-            return gr.update(visible=(m == "live"))
-        mode.change(_toggle, inputs=[mode], outputs=[accepted])
-
-        find_btn.click(search,
-                       inputs=[index_name, img_input, n_neighbours, mode, accepted],
-                       outputs=[gallery])
+        # inputs order == component creation order == search() signature order
+        find_btn.click(
+            search,
+            inputs=[img_input, index_name, mode, n_neighbours, accepted],
+            outputs=[gallery],
+        )
     return demo
 
 
