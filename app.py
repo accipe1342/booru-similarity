@@ -55,10 +55,56 @@ SITES = ["rule34", "gelbooru", "safebooru", "e621", "danbooru", "yandere", "kona
 DEFAULT_MODE = os.environ.get("RETRIEVAL_MODE", "mirror")
 _RATINGS = ["general", "sensitive", "questionable", "explicit"]
 N_TAGS_USED = 20
+EXPLICIT_SITES = {"rule34", "gelbooru", "e621"}
+
+
+def _default_ratings(site):
+    """Sensible rating defaults per site (explicit-heavy sites include all)."""
+    if site in EXPLICIT_SITES:
+        return ["general", "sensitive", "questionable", "explicit"]
+    return ["general", "sensitive"]
 # SigLIP shares the WD14 SwinV2_v3 embedding space -> same indices work for text.
 SIGLIP_REPO = "deepghs/siglip_beta"
 SIGLIP_MODEL = "smilingwolf/siglip_swinv2_base_2025_02_22_18h56m54s"
 hf_client = get_hf_client()
+
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".booru_similarity.json")
+
+
+def load_config() -> dict:
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_config(cfg: dict) -> bool:
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(cfg, f)
+        try:
+            os.chmod(CONFIG_PATH, 0o600)  # owner-only (POSIX)
+        except OSError:
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _apply_saved() -> dict:
+    cfg = load_config()
+    if cfg.get("rule34_key") and cfg.get("rule34_uid"):
+        booru_resolver.set_credentials("rule34", cfg["rule34_key"], cfg["rule34_uid"])
+    if cfg.get("gelbooru_key") and cfg.get("gelbooru_uid"):
+        booru_resolver.set_credentials("gelbooru", cfg["gelbooru_key"], cfg["gelbooru_uid"])
+    if cfg.get("contact"):
+        booru_resolver.USER_AGENT = (
+            f"booru_image_similarity/1.0 (self-hosted; contact: {cfg['contact']})")
+    return cfg
+
+
+SAVED = _apply_saved()
 
 
 # --------------------------------------------------------------------------- #
@@ -310,7 +356,13 @@ def run_tag_search(tags_text, site, n_neighbours, accepted_ratings, media_types,
         note = (f"Searched **{site}** for: `{' '.join(tags[:cap])}`"
                 + ("" if len(tags) <= cap else f"  _(capped at {cap} tags)_"))
         if not cards:
-            return "", note + "\n\n_No results — tags may not match, or all filtered by rating/media type._"
+            tips = []
+            if site in ("rule34", "gelbooru"):
+                tips.append(f"{site} needs API credentials (Settings) and uses plural tags like `1girls`")
+            if site in EXPLICIT_SITES and not ({"questionable", "explicit"} & accepted):
+                tips.append("tick questionable/explicit — this site is mostly adult")
+            tips.append("try fewer or different tags")
+            return "", note + "\n\n**No results.** Tips: " + "; ".join(tips) + "."
         return _grid(cards), note + f"  ·  {len(cards)} results."
     except Exception as e:  # noqa: BLE001
         return "", f"❌ Error: {booru_resolver.redact(e)}"
@@ -320,7 +372,7 @@ def send_chips(selected):
     return " ".join(selected or [])
 
 
-def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid):
+def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid, remember_creds):
     global hf_client
     msgs = []
     if token and token.strip():
@@ -350,6 +402,16 @@ def apply_settings(token, persist, contact, gel_key, gel_uid, r34_key, r34_uid):
         msgs.append("Rule34 credentials "
                     + ("set." if (r34_key or "").strip() and (r34_uid or "").strip()
                        else "cleared (need both api_key and user_id)."))
+    if remember_creds:
+        cfg = load_config()
+        if (r34_key or "").strip() and (r34_uid or "").strip():
+            cfg["rule34_key"], cfg["rule34_uid"] = r34_key.strip(), r34_uid.strip()
+        if (gel_key or "").strip() and (gel_uid or "").strip():
+            cfg["gelbooru_key"], cfg["gelbooru_uid"] = gel_key.strip(), gel_uid.strip()
+        if (contact or "").strip():
+            cfg["contact"] = contact.strip()
+        msgs.append("Saved to this machine (~/.booru_similarity.json, plaintext)."
+                    if save_config(cfg) else "Could not write the config file.")
     return "  \n".join(f"✅ {m}" for m in msgs) if msgs else "Nothing to apply."
 
 
@@ -366,7 +428,19 @@ def clear_tag_tab():
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
-THEME = gr.themes.Soft(primary_hue="orange", neutral_hue="slate")
+try:
+    THEME = gr.themes.Soft(primary_hue="orange", neutral_hue="slate").set(
+        block_title_background_fill="*neutral_100",
+        block_title_background_fill_dark="*neutral_800",
+        block_title_text_color="*neutral_700",
+        block_title_text_color_dark="*neutral_200",
+        block_label_background_fill="*neutral_100",
+        block_label_background_fill_dark="*neutral_800",
+        block_label_text_color="*neutral_700",
+        block_label_text_color_dark="*neutral_200",
+    )
+except Exception:  # invalid theme token on some versions -> plain Soft
+    THEME = gr.themes.Soft(primary_hue="orange", neutral_hue="slate")
 
 
 def build_ui():
@@ -406,11 +480,12 @@ def build_ui():
                     with gr.Row():
                         find_btn = gr.Button("Find similar", variant="primary", scale=2)
                         clear_img_btn = gr.Button("Clear", scale=1)
+            with gr.Accordion("🏷️ Detected tags", open=True):
+                gr.Markdown("Tick tags, then send them to the Tag search tab.")
+                tag_chips = gr.CheckboxGroup(choices=[], label="Detected tags")
+                send_btn = gr.Button("Use selected → Tag search")
             status_img = gr.Markdown()
             results_img = gr.HTML()
-            with gr.Accordion("🏷️ Detected tags", open=True):
-                tag_chips = gr.CheckboxGroup(choices=[], label="Tick tags, then send to Tag search")
-                send_btn = gr.Button("Use selected → Tag search")
 
         with gr.Tab("🏷️ Tag search"):
             gr.Markdown("Tags auto-fill from your last image search. Edit them, pick a site, "
@@ -443,23 +518,37 @@ def build_ui():
             hf_token = gr.Textbox(label="HuggingFace token", type="password", placeholder="hf_...")
             remember = gr.Checkbox(value=False, label="Remember on this machine")
             contact = gr.Textbox(label="e621 contact email (API User-Agent)",
-                                 placeholder="you@example.com")
+                                 value=SAVED.get("contact", ""), placeholder="you@example.com")
             gr.Markdown("Gelbooru live/tag search needs API credentials "
                         "(Gelbooru → Account → API Access Credentials).")
-            gel_key = gr.Textbox(label="Gelbooru api_key", type="password", placeholder="...")
-            gel_uid = gr.Textbox(label="Gelbooru user_id", placeholder="12345")
+            gel_key = gr.Textbox(label="Gelbooru api_key", type="password",
+                                 placeholder="saved" if SAVED.get("gelbooru_key") else "...")
+            gel_uid = gr.Textbox(label="Gelbooru user_id",
+                                 value=SAVED.get("gelbooru_uid", ""), placeholder="12345")
             gr.Markdown("Rule34 live/tag search also needs API credentials "
                         "(rule34.xxx → account → API access).")
-            r34_key = gr.Textbox(label="Rule34 api_key", type="password", placeholder="...")
-            r34_uid = gr.Textbox(label="Rule34 user_id", placeholder="12345")
+            r34_key = gr.Textbox(label="Rule34 api_key", type="password",
+                                 placeholder="saved" if SAVED.get("rule34_key") else "...")
+            r34_uid = gr.Textbox(label="Rule34 user_id",
+                                 value=SAVED.get("rule34_uid", ""), placeholder="12345")
+            remember_creds = gr.Checkbox(
+                value=bool(SAVED), label="Remember booru credentials on this machine")
             apply_btn = gr.Button("Apply settings", variant="primary")
-            settings_status = gr.Markdown()
+            settings_status = gr.Markdown(
+                "✅ Loaded saved booru credentials." if SAVED else "")
             apply_btn.click(apply_settings,
-                            inputs=[hf_token, remember, contact, gel_key, gel_uid, r34_key, r34_uid],
+                            inputs=[hf_token, remember, contact, gel_key, gel_uid,
+                                    r34_key, r34_uid, remember_creds],
                             outputs=[settings_status])
 
         gr.Markdown("---\n<sub>Self-hosted. Mostly NSFW sources — use responsibly and follow "
                     "each site's API terms. Indices & mirrors by deepghs.</sub>")
+
+        # per-site rating defaults
+        site_dd.change(lambda s: gr.update(value=_default_ratings(s)),
+                       inputs=[site_dd], outputs=[ratings_tag])
+        index_name.change(lambda n: gr.update(value=_default_ratings(INDEXES[n][3])),
+                          inputs=[index_name], outputs=[ratings_img])
 
         find_btn.click(
             run_similarity,
